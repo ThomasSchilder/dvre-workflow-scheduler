@@ -158,5 +158,45 @@ test("invalid externalRef protocol", () => {
   if (valid) throw new Error("should be invalid");
 });
 
+test("task asset source without assetId", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { tasks: { t: { source: "asset" } } } }
+  });
+  if (valid) throw new Error("should be invalid");
+});
+
+test("service asset source without assetId", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { services: { svc: { source: "asset", port: 8080 } } } }
+  });
+  if (valid) throw new Error("should be invalid");
+});
+
+test("task direct source without image", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { tasks: { t: { source: "direct" } } } }
+  });
+  if (valid) throw new Error("should be invalid");
+});
+
+test("service direct source without image", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { services: { svc: { source: "direct", port: 8080 } } } }
+  });
+  if (valid) throw new Error("should be invalid");
+});
+
 console.log(`\n${testsPassed} passed, ${testsFailed} failed`);
 process.exit(testsFailed > 0 ? 1 : 0);

@@ -194,9 +194,19 @@
     },
     "task": {
       "type": "object",
-      "required": ["image"],
+      "required": [],
       "additionalProperties": false,
       "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["direct", "asset"],
+          "description": "'direct': explicit image, command, args, env, resources. 'asset': resolve defaults via dvre-asset-indexer by blockchain assetId (asset_type=FUNCTION). Workflow-level fields override asset-provided defaults."
+        },
+        "assetId": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Blockchain asset ID for a FUNCTION-type asset. Used when source=asset. Resolved via GET /api/assets/{assetId}. Asset metadata provides defaults for image, command, args, env, resources."
+        },
         "binding": {
           "type": "string",
           "description": "Infrastructure reference. Overrides section-level binding."
@@ -204,25 +214,25 @@
         "image": {
           "type": "string",
           "minLength": 1,
-          "description": "Container image (e.g. 'python:3.11', 'myregistry/myapp:latest')."
+          "description": "Container image (e.g. 'python:3.11', 'myregistry/myapp:latest'). Required when source=direct. Overrides asset-provided image when source=asset."
         },
         "command": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Container entrypoint override."
+          "description": "Container entrypoint override. Overrides asset-provided command when source=asset."
         },
         "args": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Container arguments."
+          "description": "Container arguments. Overrides asset-provided args when source=asset."
         },
         "env": {
           "type": "object",
-          "description": "Environment variables injected into the container.",
+          "description": "Environment variables injected into the container. When source=asset, merges with asset-provided env (workflow-level keys override asset keys).",
           "additionalProperties": {
             "type": "string"
           }
@@ -265,13 +275,53 @@
         "resources": {
           "$ref": "#/$defs/resources"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["source"],
+            "properties": { "source": { "const": "direct" } }
+          },
+          "then": {
+            "required": ["image"]
+          }
+        },
+        {
+          "if": {
+            "required": ["source"],
+            "properties": { "source": { "const": "asset" } }
+          },
+          "then": {
+            "required": ["assetId"]
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": ["source"]
+            }
+          },
+          "then": {
+            "required": ["image"]
+          }
+        }
+      ]
     },
     "service": {
       "type": "object",
-      "required": ["image"],
+      "required": [],
       "additionalProperties": false,
       "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["direct", "asset"],
+          "description": "'direct': explicit image, command, args, env, resources. 'asset': resolve defaults via dvre-asset-indexer by blockchain assetId (asset_type=FUNCTION). Workflow-level fields override asset-provided defaults."
+        },
+        "assetId": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Blockchain asset ID for a FUNCTION-type asset. Used when source=asset. Resolved via GET /api/assets/{assetId}. Asset metadata provides defaults for image, command, args, env, resources."
+        },
         "binding": {
           "type": "string",
           "description": "Infrastructure reference. Overrides section-level binding."
@@ -279,25 +329,25 @@
         "image": {
           "type": "string",
           "minLength": 1,
-          "description": "Container image."
+          "description": "Container image. Required when source=direct. Overrides asset-provided image when source=asset."
         },
         "command": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Container entrypoint override."
+          "description": "Container entrypoint override. Overrides asset-provided command when source=asset."
         },
         "args": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Container arguments."
+          "description": "Container arguments. Overrides asset-provided args when source=asset."
         },
         "env": {
           "type": "object",
-          "description": "Environment variables injected into the container.",
+          "description": "Environment variables injected into the container. When source=asset, merges with asset-provided env (workflow-level keys override asset keys).",
           "additionalProperties": {
             "type": "string"
           }
@@ -344,15 +394,45 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 65535,
-          "description": "Container port the service listens on (image-defined, not infrastructure networking config)."
+          "description": "Container port the service listens on. Always specified at workflow level (deployment concern, not intrinsic to the asset)."
         },
         "replicas": {
           "type": "integer",
           "minimum": 1,
           "default": 1,
-          "description": "Number of service replicas. Defaults to 1."
+          "description": "Number of service replicas. Always specified at workflow level (deployment concern, not intrinsic to the asset). Defaults to 1."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["source"],
+            "properties": { "source": { "const": "direct" } }
+          },
+          "then": {
+            "required": ["image"]
+          }
+        },
+        {
+          "if": {
+            "required": ["source"],
+            "properties": { "source": { "const": "asset" } }
+          },
+          "then": {
+            "required": ["assetId"]
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": ["source"]
+            }
+          },
+          "then": {
+            "required": ["image"]
+          }
+        }
+      ]
     },
     "resources": {
       "type": "object",

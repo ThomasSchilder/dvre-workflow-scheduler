@@ -72,5 +72,55 @@ test("ftp protocol in externalRef", () => {
   if (!valid) throw new Error(JSON.stringify(validate.errors));
 });
 
+test("task with asset source and assetId", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { tasks: { t: { source: "asset", assetId: 42 } } } }
+  });
+  if (!valid) throw new Error(JSON.stringify(validate.errors));
+});
+
+test("task with asset source and overrides", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { tasks: { t: { source: "asset", assetId: 42, env: { KEY: "val" }, args: ["--flag"] } } } }
+  });
+  if (!valid) throw new Error(JSON.stringify(validate.errors));
+});
+
+test("service with asset source", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { services: { svc: { source: "asset", assetId: 55, port: 8080, replicas: 2 } } } }
+  });
+  if (!valid) throw new Error(JSON.stringify(validate.errors));
+});
+
+test("task without source still requires image", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { tasks: { t: { image: "alpine:latest" } } } }
+  });
+  if (!valid) throw new Error(JSON.stringify(validate.errors));
+});
+
+test("service without source still requires image", () => {
+  const valid = validate({
+    apiVersion: "v1",
+    metadata: { name: "x" },
+    infrastructure: baseInfra,
+    sections: { s: { services: { svc: { image: "nginx:latest", port: 80 } } } }
+  });
+  if (!valid) throw new Error(JSON.stringify(validate.errors));
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
