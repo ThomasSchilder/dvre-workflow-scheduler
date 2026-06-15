@@ -1,0 +1,31 @@
+{
+  "name": "dvre-workflow-scheduler",
+  "version": "0.1.0",
+  "description": "DVRE Workflow Scheduler — validates, schedules, and orchestrates scientific workflows on heterogeneous compute infrastructure",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "test": "node test/schema/validate.js && node test/schema/validate-negative.js",
+    "test:schema": "node test/schema/validate.js && node test/schema/validate-negative.js",
+    "test:dag": "node test/dag/dag.test.js",
+    "test:refs": "node test/refs/refs.test.js",
+    "test:client": "node test/operator-client/client.test.js",
+    "test:unit": "node test/dag/dag.test.js && node test/refs/refs.test.js && node test/operator-client/client.test.js && node test/scheduler/scheduler.test.js && node test/lifecycle/lifecycle.test.js && node test/tracker/tracker.test.js && node test/poller/poller.test.js",
+    "test:poller": "node test/poller/poller.test.js",
+    "viz": "node src/viz.js",
+    "viz:dot": "node src/viz.js --output ./figures --svg"
+  },
+  "keywords": [
+    "dvre",
+    "workflow",
+    "scheduler"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@viz-js/viz": "^3.28.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "express": "^5.2.1"
+  }
+}

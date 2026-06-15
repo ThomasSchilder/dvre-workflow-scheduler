@@ -1,0 +1,441 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dvre.org/schemas/workflow-v1.json",
+  "title": "Workflow",
+  "description": "DVRE Workflow definition schema. A workflow defines tasks, services, and their dependencies across heterogeneous compute infrastructure.",
+  "type": "object",
+  "required": ["apiVersion", "metadata", "infrastructure", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "v1",
+      "description": "API version of the workflow schema."
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "infrastructure": {
+      "type": "object",
+      "description": "Named infrastructure targets that sections/tasks can bind to.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/infraConfig"
+      }
+    },
+    "volumes": {
+      "type": "object",
+      "description": "Named shared volumes declared at workflow level, referenced by sections/tasks.",
+      "additionalProperties": {
+        "$ref": "#/$defs/volumeSpec"
+      }
+    },
+    "sections": {
+      "type": "object",
+      "description": "Named sections grouping tasks and services with shared config, binding, and volumes.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/section"
+      }
+    },
+    "externalRefs": {
+      "type": "object",
+      "description": "Named references to external data sources (blockchain assets or direct URLs).",
+      "additionalProperties": {
+        "$ref": "#/$defs/externalRef"
+      }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+          "description": "Workflow name. Must be compatible with infrastructure naming requirements (lowercase, alphanumeric, hyphens)."
+        },
+        "labels": {
+          "type": "object",
+          "description": "Arbitrary key-value labels for categorization.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "infraConfig": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["direct", "asset"],
+          "description": "'direct': explicit type and endpoint. 'asset': resolve via dvre-asset-indexer by blockchain assetId (url → endpoint, metadata → type/capabilities)."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["kubernetes"],
+          "description": "Infrastructure type. Used when source=direct. Extensible for future platforms (docker, nomad, swarm)."
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Operator REST API URL. Used when source=direct (e.g. 'http://dvre-k8s-workflow-operator:8080')."
+        },
+        "assetId": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Blockchain asset ID for the infrastructure. Used when source=asset. Resolved via GET /api/assets/{assetId}."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "source": { "const": "direct" } }
+          },
+          "then": {
+            "required": ["type", "endpoint"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "source": { "const": "asset" } }
+          },
+          "then": {
+            "required": ["assetId"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "volumeSpec": {
+      "type": "object",
+      "required": ["size"],
+      "additionalProperties": false,
+      "properties": {
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$",
+          "description": "Volume size (e.g. 1Gi, 500Mi)."
+        },
+        "storageClass": {
+          "type": "string",
+          "description": "Storage class name. Interpretation depends on the target infrastructure."
+        },
+        "accessMode": {
+          "type": "string",
+          "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany"],
+          "default": "ReadWriteOnce",
+          "description": "Volume access mode (ReadWriteOnce, ReadWriteMany, ReadOnlyMany)."
+        }
+      }
+    },
+    "section": {
+      "type": "object",
+      "required": [],
+      "additionalProperties": false,
+      "properties": {
+        "executionMode": {
+          "type": "string",
+          "enum": ["parallel", "sequential"],
+          "default": "parallel",
+          "description": "Within-section task/service execution mode. 'parallel' (default): tasks run concurrently unless dependsOn specifies otherwise. 'sequential': auto-generates dependsOn chain from declaration order."
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Section-level dependency: no task in this section starts until all tasks in the referenced sections have completed.",
+          "uniqueItems": true
+        },
+        "binding": {
+          "type": "string",
+          "description": "Infrastructure reference (section-level default). Overridden by task/service-level binding."
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Volume references shared by all tasks/services in this section.",
+          "uniqueItems": true
+        },
+        "volumeMounts": {
+          "type": "object",
+          "description": "Default volume mount paths for all tasks/services in this section. Overridden by task/service-level volumeMounts.",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^/.*"
+          }
+        },
+        "tasks": {
+          "type": "object",
+          "description": "Named finite tasks in this section. Each maps to a batch execution unit on the target infrastructure.",
+          "additionalProperties": {
+            "$ref": "#/$defs/task"
+          }
+        },
+        "services": {
+          "type": "object",
+          "description": "Named long-running services in this section. Each maps to a persistent deployment on the target infrastructure.",
+          "additionalProperties": {
+            "$ref": "#/$defs/service"
+          }
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["image"],
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "type": "string",
+          "description": "Infrastructure reference. Overrides section-level binding."
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Container image (e.g. 'python:3.11', 'myregistry/myapp:latest')."
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container entrypoint override."
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container arguments."
+        },
+        "env": {
+          "type": "object",
+          "description": "Environment variables injected into the container.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "externalRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Names of workflow-level external refs this task consumes. Data is fetched and placed at /externalRefs/<refName>/ before the task starts.",
+          "uniqueItems": true
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Additional volume references beyond section volumes.",
+          "uniqueItems": true
+        },
+        "volumeMounts": {
+          "type": "object",
+          "description": "Map of volume name to container mount path.",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^/.*"
+          }
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "DAG edges. Unqualified names within the same section ('taskName'), qualified names across sections ('section.taskName').",
+          "uniqueItems": true
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["image"],
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "type": "string",
+          "description": "Infrastructure reference. Overrides section-level binding."
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Container image."
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container entrypoint override."
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container arguments."
+        },
+        "env": {
+          "type": "object",
+          "description": "Environment variables injected into the container.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "externalRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Names of workflow-level external refs this service consumes.",
+          "uniqueItems": true
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Additional volume references beyond section volumes.",
+          "uniqueItems": true
+        },
+        "volumeMounts": {
+          "type": "object",
+          "description": "Map of volume name to container mount path.",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^/.*"
+          }
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "DAG edges. Unqualified names within the same section ('serviceName'), qualified names across sections ('section.serviceName').",
+          "uniqueItems": true
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Container port the service listens on (image-defined, not infrastructure networking config)."
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Number of service replicas. Defaults to 1."
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "description": "Compute resource requirements.",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "pattern": "^[0-9]+m?$",
+          "description": "CPU request (e.g. '500m', '1')."
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$",
+          "description": "Memory request (e.g. '256Mi', '1Gi')."
+        },
+        "gpu": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Number of GPUs requested."
+        }
+      }
+    },
+    "externalRef": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["asset", "direct"],
+          "description": "'asset': resolve via dvre-asset-indexer by blockchain assetId. 'direct': explicit URL/protocol/credentials."
+        },
+        "assetId": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Blockchain asset ID. Used when source=asset. Resolved via GET /api/assets/{assetId}."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["s3", "http", "ftp", "ipfs"],
+          "description": "Retrieval protocol. Used when source=direct."
+        },
+        "uri": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Direct URI to the data source. Used when source=direct (e.g. 's3://bucket/path', 'https://example.com/data')."
+        },
+        "credentials": {
+          "$ref": "#/$defs/credentials"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "source": { "const": "asset" } }
+          },
+          "then": {
+            "required": ["assetId"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "source": { "const": "direct" } }
+          },
+          "then": {
+            "required": ["protocol", "uri"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "credentials": {
+      "type": "object",
+      "description": "Credentials reference for accessing an external data source.",
+      "required": ["secretRef"],
+      "additionalProperties": false,
+      "properties": {
+        "secretRef": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Secret reference containing credentials (keys vary by protocol: accessKeyId/secretAccessKey for S3, etc.)."
+        }
+      }
+    }
+  }
+}

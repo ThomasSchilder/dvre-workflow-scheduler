@@ -65,6 +65,15 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
+# SQLite database
+data/
+
+# Generated figures
+figures/
+
+# Implementation docs
+plan/
+
 # dotenv environment variable files
 .env
 .env.*
@@ -122,8 +131,22 @@ dist
 # TernJS port file
 .tern-port
 
-# Stores VSCode versions used for testing VSCode extensions
+# IDE
+.vscode/
+.idea/
 .vscode-test
+
+# macOS
+.DS_Store
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
 
 # pnpm
 .pnpm-store
