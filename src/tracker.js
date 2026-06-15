@@ -1,6 +1,6 @@
 import { now } from "./db.js";
 import { computeServiceLifecycle } from "./dag.js";
-import { resolveExternalRefSpecs } from "./refs.js";
+import { resolveExternalRefSpecs, resolveWorkflowNodes } from "./refs.js";
 import { deployTier } from "./scheduler.js";
 import { buildOperatorClients } from "./lib/infra.js";
 import { OperatorClient } from "./operator-client.js";
@@ -190,6 +190,19 @@ async function advanceTier(workflowId, db) {
     let externalRefSpecs;
     try {
       externalRefSpecs = await resolveExternalRefSpecs(config);
+    } catch (err) {
+      const failTs = now();
+      stmts.updateWorkflowStatus.run("Failed", failTs, workflowId);
+      broadcast(workflowId, "workflow.failed", {
+        workflowId, nodeId: null, operatorResourceId: null, resourceType: "workflow",
+        details: { phase: "Failed", error: err.message }, timestamp: failTs,
+      });
+      return;
+    }
+
+    try {
+      const resolvedSections = await resolveWorkflowNodes(config);
+      config.sections = resolvedSections;
     } catch (err) {
       const failTs = now();
       stmts.updateWorkflowStatus.run("Failed", failTs, workflowId);

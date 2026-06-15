@@ -641,6 +641,190 @@ console.log("\n=== deployWorkflow with volumes ===");
   restoreFetch();
 }
 
+console.log("\n=== deployWorkflow with asset-based task (mocked) ===");
+{
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    const method = opts?.method || "GET";
+    const body = opts?.body ? JSON.parse(opts.body) : undefined;
+    calls.push({ url, method, body });
+
+    if (url.includes("/api/assets/42")) {
+      return jsonResponse({
+        asset_id: "42",
+        asset_type: 2,
+        name: "my-tool",
+        url: "ghcr.io/org/my-tool:1.0",
+        protocol: 0,
+        metadata: '{"image":"ghcr.io/org/my-tool:1.0","command":["/bin/sh","-c"],"args":["run --input /data"],"env":{"MODE":"prod","LOG_LEVEL":"info"},"resources":{"cpu":"100m","memory":"256Mi"}}',
+      });
+    }
+    if (method === "POST" && url.endsWith("/workflows")) return jsonResponse({ id: body.workflowName, status: { phase: "Pending" } }, 201);
+    if (method === "POST" && url.includes("/webhooks")) return jsonResponse({ id: "wh-1", url: body.url }, 201);
+    if (method === "POST" && url.includes("/tasks")) return jsonResponse({ id: `wft-${body.taskName}`, taskName: body.taskName, status: { phase: "Pending" } }, 201);
+    if (method === "POST" && url.includes("/services")) return jsonResponse({ id: `wfs-${body.serviceName}`, serviceName: body.serviceName, desiredPhase: body.desiredPhase, status: { phase: "Pending" } }, 201);
+    if (method === "DELETE") return jsonResponse({ id: "deleted" });
+    return jsonResponse({ error: "Not found" }, 404);
+  };
+
+  const origEnv = process.env.ASSET_INDEXER_URL;
+  process.env.ASSET_INDEXER_URL = "http://indexer:3001";
+
+  const { initDb } = await import("../../src/db.js");
+  const { deployWorkflow } = await import("../../src/scheduler.js");
+  const { resolveDag, computeServiceLifecycle } = await import("../../src/dag.js");
+
+  const dbPath = `/tmp/scheduler-test-asset-${Date.now()}.db`;
+  const db = initDb(dbPath);
+
+  const workflowId = "wf-asset";
+  const config = {
+    apiVersion: "v1",
+    metadata: { name: "asset-test" },
+    infrastructure: {
+      local: { source: "direct", type: "kubernetes", endpoint: "http://localhost:8080" },
+    },
+    sections: {
+      main: {
+        binding: "local",
+        tasks: {
+          "asset-task": { source: "asset", assetId: 42, env: { LOG_LEVEL: "debug" } },
+          "direct-task": { image: "alpine:3.18", command: ["echo", "hello"] },
+        },
+        services: {
+          "asset-svc": { source: "asset", assetId: 42, port: 8080, replicas: 2 },
+        },
+      },
+    },
+  };
+
+  const dag = resolveDag(config);
+  const serviceLifecycle = computeServiceLifecycle(dag);
+  const ts = new Date().toISOString();
+
+  db.stmts.insertWorkflow.run(workflowId, "asset-test", "Deploying", JSON.stringify(config), JSON.stringify(dag), null, null, ts, ts);
+  for (const [nodeId, node] of Object.entries(dag.nodes)) {
+    const nodeIdPrefixed = `${workflowId}.${nodeId}`;
+    const lifecycle = serviceLifecycle[nodeId];
+    let desiredPhase = null;
+    if (node.type === "service" && lifecycle) desiredPhase = lifecycle.noDependents ? "Running" : null;
+    db.stmts.insertNode.run(nodeIdPrefixed, workflowId, node.type, node.section, node.name, "Pending", node.tier, JSON.stringify(node.dependsOn), node.binding, null, null, desiredPhase, ts, ts);
+  }
+  db.stmts.updateWorkflowDag.run(JSON.stringify(dag), "Deploying", ts, workflowId);
+
+  await deployWorkflow(workflowId, db);
+
+  const wfRow = db.stmts.getWorkflow.get(workflowId);
+  assert(wfRow.status === "Running", "workflow Running after deploy with asset tasks");
+
+  const taskCalls = calls.filter(c => c.method === "POST" && c.url.includes("/tasks"));
+  assert(taskCalls.length === 2, "two tasks created (asset + direct)");
+
+  const assetTaskCall = taskCalls.find(c => c.body.taskName.includes("asset-task"));
+  assert(assetTaskCall, "asset task created");
+  assert(assetTaskCall.body.image === "ghcr.io/org/my-tool:1.0", "asset task: image from asset metadata");
+  assert(assetTaskCall.body.command[0] === "/bin/sh", "asset task: command from asset metadata");
+  assert(assetTaskCall.body.args[0] === "run --input /data", "asset task: args from asset metadata");
+  assert(assetTaskCall.body.env.MODE === "prod", "asset task: env MODE from asset metadata");
+  assert(assetTaskCall.body.env.LOG_LEVEL === "debug", "asset task: env LOG_LEVEL overridden by workflow");
+  assert(assetTaskCall.body.resources.cpu === "100m", "asset task: resources from asset metadata");
+
+  const directTaskCall = taskCalls.find(c => c.body.taskName.includes("direct-task"));
+  assert(directTaskCall, "direct task created");
+  assert(directTaskCall.body.image === "alpine:3.18", "direct task: image unchanged");
+
+  const serviceCalls = calls.filter(c => c.method === "POST" && c.url.includes("/services"));
+  assert(serviceCalls.length === 1, "one service created");
+  const assetSvcCall = serviceCalls[0];
+  assert(assetSvcCall.body.image === "ghcr.io/org/my-tool:1.0", "asset service: image from asset metadata");
+  assert(assetSvcCall.body.port === 8080, "asset service: port from workflow");
+  assert(assetSvcCall.body.replicas === 2, "asset service: replicas from workflow");
+
+  process.env.ASSET_INDEXER_URL = origEnv;
+
+  const { unlinkSync } = await import("fs");
+  try { unlinkSync(dbPath); } catch (_) {}
+  try { unlinkSync(dbPath.replace(".db", "-wal")); } catch (_) {}
+  try { unlinkSync(dbPath.replace(".db", "-shm")); } catch (_) {}
+
+  restoreFetch();
+}
+
+console.log("\n=== deployWorkflow with asset resolution failure ===");
+{
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    const method = opts?.method || "GET";
+    const body = opts?.body ? JSON.parse(opts.body) : undefined;
+    calls.push({ url, method, body });
+
+    if (url.includes("/api/assets/99")) {
+      return jsonResponse({ asset_id: "99", asset_type: 0, name: "dataset", url: "https://example.com/data", protocol: 0, metadata: "{}" });
+    }
+    if (method === "POST" && url.endsWith("/workflows")) return jsonResponse({ id: body.workflowName, status: { phase: "Pending" } }, 201);
+    if (method === "DELETE") return jsonResponse({ id: "deleted" });
+    return jsonResponse({ error: "Not found" }, 404);
+  };
+
+  const origEnv = process.env.ASSET_INDEXER_URL;
+  process.env.ASSET_INDEXER_URL = "http://indexer:3001";
+
+  const { initDb } = await import("../../src/db.js");
+  const { deployWorkflow } = await import("../../src/scheduler.js");
+  const { resolveDag, computeServiceLifecycle } = await import("../../src/dag.js");
+
+  const dbPath = `/tmp/scheduler-test-asset-fail-${Date.now()}.db`;
+  const db = initDb(dbPath);
+
+  const workflowId = "wf-asset-fail";
+  const config = {
+    apiVersion: "v1",
+    metadata: { name: "asset-fail-test" },
+    infrastructure: {
+      local: { source: "direct", type: "kubernetes", endpoint: "http://localhost:8080" },
+    },
+    sections: {
+      main: {
+        binding: "local",
+        tasks: {
+          "bad-asset-task": { source: "asset", assetId: 99 },
+        },
+      },
+    },
+  };
+
+  const dag = resolveDag(config);
+  const serviceLifecycle = computeServiceLifecycle(dag);
+  const ts = new Date().toISOString();
+
+  db.stmts.insertWorkflow.run(workflowId, "asset-fail-test", "Deploying", JSON.stringify(config), JSON.stringify(dag), null, null, ts, ts);
+  for (const [nodeId, node] of Object.entries(dag.nodes)) {
+    const nodeIdPrefixed = `${workflowId}.${nodeId}`;
+    db.stmts.insertNode.run(nodeIdPrefixed, workflowId, node.type, node.section, node.name, "Pending", node.tier, JSON.stringify(node.dependsOn), node.binding, null, null, null, ts, ts);
+  }
+  db.stmts.updateWorkflowDag.run(JSON.stringify(dag), "Deploying", ts, workflowId);
+
+  try {
+    await deployWorkflow(workflowId, db);
+    assert(false, "should have thrown");
+  } catch (err) {
+    assert(err.message.includes("Task/service asset resolution failed"), "throws asset resolution failed");
+  }
+
+  const wfRow = db.stmts.getWorkflow.get(workflowId);
+  assert(wfRow.status === "Failed", "workflow Failed after bad asset resolution");
+  assert(wfRow.deploy_error.includes("not a function asset"), "deploy_error mentions wrong asset type");
+
+  process.env.ASSET_INDEXER_URL = origEnv;
+
+  const { unlinkSync } = await import("fs");
+  try { unlinkSync(dbPath); } catch (_) {}
+  try { unlinkSync(dbPath.replace(".db", "-wal")); } catch (_) {}
+  try { unlinkSync(dbPath.replace(".db", "-shm")); } catch (_) {}
+
+  restoreFetch();
+}
+
 console.log("");
 if (failed === 0) {
   console.log(`ALL TESTS PASSED (${passed})`);

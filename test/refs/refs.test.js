@@ -1,4 +1,4 @@
-import { resolveInfrastructure, resolveExternalRefs, resolveExternalRefSpecs } from "../../src/refs.js";
+import { resolveInfrastructure, resolveExternalRefs, resolveExternalRefSpecs, resolveTaskAsset, resolveServiceAsset, resolveWorkflowNodes } from "../../src/refs.js";
 
 let passed = 0;
 let failed = 0;
@@ -379,6 +379,357 @@ console.log("\n--- unknown source throws ---");
   } catch (err) {
     assert(err.message.includes("unknown source"), "throws for unknown source");
   }
+}
+
+console.log("\n=== resolveTaskAsset ===");
+
+console.log("\n--- source=direct passthrough ---");
+{
+  const taskDef = { source: "direct", image: "python:3.11", command: ["python", "run.py"] };
+  const result = await resolveTaskAsset(taskDef, "http://unused:3001");
+  assert(result.image === "python:3.11", "image preserved");
+  assert(result.command[0] === "python", "command preserved");
+  assert(result.source === "direct", "source preserved");
+}
+
+console.log("\n--- no source (backward compatible) passthrough ---");
+{
+  const taskDef = { image: "alpine:latest", args: ["echo", "hello"] };
+  const result = await resolveTaskAsset(taskDef, "http://unused:3001");
+  assert(result.image === "alpine:latest", "image preserved");
+  assert(result.args[0] === "echo", "args preserved");
+  assert(result.source === undefined, "source absent");
+}
+
+console.log("\n--- source=asset with full metadata ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/42": () =>
+      jsonResponse({
+        asset_id: "42",
+        asset_type: 2,
+        name: "my-tool",
+        url: "ghcr.io/org/my-tool:1.0",
+        protocol: 0,
+        metadata: '{"image":"ghcr.io/org/my-tool:1.0","command":["/bin/sh","-c"],"args":["run --input /data"],"env":{"MODE":"prod","LOG_LEVEL":"info"},"resources":{"cpu":"100m","memory":"256Mi"}}',
+      }),
+  });
+
+  const taskDef = { source: "asset", assetId: 42 };
+  const result = await resolveTaskAsset(taskDef, "http://indexer:3001");
+  assert(result.image === "ghcr.io/org/my-tool:1.0", "image from asset metadata");
+  assert(result.command[0] === "/bin/sh", "command from asset metadata");
+  assert(result.args[0] === "run --input /data", "args from asset metadata");
+  assert(result.env.MODE === "prod", "env MODE from asset metadata");
+  assert(result.env.LOG_LEVEL === "info", "env LOG_LEVEL from asset metadata");
+  assert(result.resources.cpu === "100m", "resources from asset metadata");
+  assert(result.resources.memory === "256Mi", "resources memory from asset metadata");
+  restoreFetch();
+}
+
+console.log("\n--- source=asset with workflow overrides ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/42": () =>
+      jsonResponse({
+        asset_id: "42",
+        asset_type: 2,
+        name: "my-tool",
+        url: "ghcr.io/org/my-tool:1.0",
+        protocol: 0,
+        metadata: '{"image":"ghcr.io/org/my-tool:1.0","command":["/bin/sh","-c"],"args":["run"],"env":{"MODE":"prod","LOG_LEVEL":"info"}}',
+      }),
+  });
+
+  const taskDef = { source: "asset", assetId: 42, image: "custom:2.0", args: ["--custom"], env: { LOG_LEVEL: "debug", EXTRA: "yes" } };
+  const result = await resolveTaskAsset(taskDef, "http://indexer:3001");
+  assert(result.image === "custom:2.0", "workflow image overrides asset");
+  assert(result.command[0] === "/bin/sh", "command from asset (no workflow override)");
+  assert(result.args[0] === "--custom", "workflow args overrides asset");
+  assert(result.env.MODE === "prod", "env MODE from asset (no workflow override)");
+  assert(result.env.LOG_LEVEL === "debug", "env LOG_LEVEL workflow overrides asset");
+  assert(result.env.EXTRA === "yes", "env EXTRA from workflow only");
+  restoreFetch();
+}
+
+console.log("\n--- source=asset with partial metadata ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/42": () =>
+      jsonResponse({
+        asset_id: "42",
+        asset_type: 2,
+        name: "my-tool",
+        url: "ghcr.io/org/my-tool:1.0",
+        protocol: 0,
+        metadata: '{"image":"ghcr.io/org/my-tool:1.0"}',
+      }),
+  });
+
+  const taskDef = { source: "asset", assetId: 42, command: ["python", "run.py"] };
+  const result = await resolveTaskAsset(taskDef, "http://indexer:3001");
+  assert(result.image === "ghcr.io/org/my-tool:1.0", "image from asset metadata");
+  assert(result.command[0] === "python", "command from workflow override");
+  assert(result.args === undefined, "args absent (neither asset nor workflow)");
+  restoreFetch();
+}
+
+console.log("\n--- source=asset with non-function asset throws ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/5": () =>
+      jsonResponse({
+        asset_id: "5",
+        asset_type: 4,
+        name: "cluster",
+        url: "http://cluster:8080",
+        protocol: 0,
+        metadata: "{}",
+      }),
+  });
+
+  const taskDef = { source: "asset", assetId: 5 };
+  try {
+    await resolveTaskAsset(taskDef, "http://indexer:3001");
+    assert(false, "should have thrown");
+  } catch (err) {
+    assert(err.message.includes("not a function asset"), "throws for non-function asset");
+    assert(err.message.includes("asset_type=4"), "includes actual asset_type");
+  }
+  restoreFetch();
+}
+
+console.log("\n--- source=asset with missing assetId throws ---");
+{
+  const taskDef = { source: "asset" };
+  try {
+    await resolveTaskAsset(taskDef, "http://indexer:3001");
+    assert(false, "should have thrown");
+  } catch (err) {
+    assert(err.message.includes("no assetId"), "throws for missing assetId");
+  }
+}
+
+console.log("\n--- source=asset without ASSET_INDEXER_URL throws ---");
+{
+  const origEnv = process.env.ASSET_INDEXER_URL;
+  delete process.env.ASSET_INDEXER_URL;
+  const taskDef = { source: "asset", assetId: 42 };
+  try {
+    await resolveTaskAsset(taskDef);
+    assert(false, "should have thrown");
+  } catch (err) {
+    assert(err.message.includes("ASSET_INDEXER_URL"), "throws for missing ASSET_INDEXER_URL");
+  }
+  process.env.ASSET_INDEXER_URL = origEnv;
+}
+
+console.log("\n--- source=asset with empty metadata ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/42": () =>
+      jsonResponse({
+        asset_id: "42",
+        asset_type: 2,
+        name: "empty-tool",
+        url: "",
+        protocol: 0,
+        metadata: null,
+      }),
+  });
+
+  const taskDef = { source: "asset", assetId: 42, image: "fallback:latest" };
+  const result = await resolveTaskAsset(taskDef, "http://indexer:3001");
+  assert(result.image === "fallback:latest", "workflow image used when no asset metadata");
+  restoreFetch();
+}
+
+console.log("\n--- unknown source throws ---");
+{
+  const taskDef = { source: "magic" };
+  try {
+    await resolveTaskAsset(taskDef, "http://indexer:3001");
+    assert(false, "should have thrown");
+  } catch (err) {
+    assert(err.message.includes("unknown source"), "throws for unknown source");
+  }
+}
+
+console.log("\n=== resolveServiceAsset ===");
+
+console.log("\n--- source=direct passthrough ---");
+{
+  const serviceDef = { source: "direct", image: "nginx:latest", port: 8080, replicas: 3 };
+  const result = await resolveServiceAsset(serviceDef, "http://unused:3001");
+  assert(result.image === "nginx:latest", "image preserved");
+  assert(result.port === 8080, "port preserved");
+  assert(result.replicas === 3, "replicas preserved");
+}
+
+console.log("\n--- no source passthrough ---");
+{
+  const serviceDef = { image: "nginx:latest", port: 80 };
+  const result = await resolveServiceAsset(serviceDef, "http://unused:3001");
+  assert(result.image === "nginx:latest", "image preserved");
+  assert(result.port === 80, "port preserved");
+}
+
+console.log("\n--- source=asset with full metadata ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/55": () =>
+      jsonResponse({
+        asset_id: "55",
+        asset_type: 2,
+        name: "api-server",
+        url: "ghcr.io/org/api:2.0",
+        protocol: 0,
+        metadata: '{"image":"ghcr.io/org/api:2.0","env":{"PORT":"3000","DEBUG":"false"},"resources":{"cpu":"250m","memory":"512Mi"}}',
+      }),
+  });
+
+  const serviceDef = { source: "asset", assetId: 55, port: 8080, replicas: 2 };
+  const result = await resolveServiceAsset(serviceDef, "http://indexer:3001");
+  assert(result.image === "ghcr.io/org/api:2.0", "image from asset metadata");
+  assert(result.port === 8080, "port from workflow (not asset)");
+  assert(result.replicas === 2, "replicas from workflow (not asset)");
+  assert(result.env.PORT === "3000", "env PORT from asset metadata");
+  assert(result.env.DEBUG === "false", "env DEBUG from asset metadata");
+  assert(result.resources.cpu === "250m", "resources from asset metadata");
+  restoreFetch();
+}
+
+console.log("\n--- source=asset with env override ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/55": () =>
+      jsonResponse({
+        asset_id: "55",
+        asset_type: 2,
+        name: "api-server",
+        url: "ghcr.io/org/api:2.0",
+        protocol: 0,
+        metadata: '{"image":"ghcr.io/org/api:2.0","env":{"PORT":"3000","DEBUG":"false"}}',
+      }),
+  });
+
+  const serviceDef = { source: "asset", assetId: 55, port: 8080, env: { DEBUG: "true" } };
+  const result = await resolveServiceAsset(serviceDef, "http://indexer:3001");
+  assert(result.env.PORT === "3000", "env PORT from asset (no workflow override)");
+  assert(result.env.DEBUG === "true", "env DEBUG workflow overrides asset");
+  restoreFetch();
+}
+
+console.log("\n--- source=asset with non-function asset throws ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/1": () =>
+      jsonResponse({
+        asset_id: "1",
+        asset_type: 0,
+        name: "dataset",
+        url: "https://example.com/data",
+        protocol: 0,
+        metadata: "{}",
+      }),
+  });
+
+  const serviceDef = { source: "asset", assetId: 1, port: 8080 };
+  try {
+    await resolveServiceAsset(serviceDef, "http://indexer:3001");
+    assert(false, "should have thrown");
+  } catch (err) {
+    assert(err.message.includes("not a function asset"), "throws for non-function asset");
+  }
+  restoreFetch();
+}
+
+console.log("\n--- source=asset with missing assetId throws ---");
+{
+  const serviceDef = { source: "asset", port: 8080 };
+  try {
+    await resolveServiceAsset(serviceDef, "http://indexer:3001");
+    assert(false, "should have thrown");
+  } catch (err) {
+    assert(err.message.includes("no assetId"), "throws for missing assetId");
+  }
+}
+
+console.log("\n--- unknown source throws ---");
+{
+  const serviceDef = { source: "magic", port: 8080 };
+  try {
+    await resolveServiceAsset(serviceDef, "http://indexer:3001");
+    assert(false, "should have thrown");
+  } catch (err) {
+    assert(err.message.includes("unknown source"), "throws for unknown source");
+  }
+}
+
+console.log("\n=== resolveWorkflowNodes ===");
+
+console.log("\n--- resolves tasks and services across sections ---");
+{
+  mockFetch({
+    "http://indexer:3001/api/assets/42": () =>
+      jsonResponse({
+        asset_id: "42",
+        asset_type: 2,
+        name: "my-tool",
+        url: "ghcr.io/org/my-tool:1.0",
+        protocol: 0,
+        metadata: '{"image":"ghcr.io/org/my-tool:1.0","command":["run"]}',
+      }),
+    "http://indexer:3001/api/assets/55": () =>
+      jsonResponse({
+        asset_id: "55",
+        asset_type: 2,
+        name: "api-server",
+        url: "ghcr.io/org/api:2.0",
+        protocol: 0,
+        metadata: '{"image":"ghcr.io/org/api:2.0","env":{"PORT":"3000"}}',
+      }),
+  });
+
+  const workflow = {
+    sections: {
+      process: {
+        tasks: {
+          "asset-task": { source: "asset", assetId: 42 },
+          "direct-task": { image: "alpine:latest", command: ["echo"] },
+        },
+      },
+      serve: {
+        services: {
+          "asset-svc": { source: "asset", assetId: 55, port: 8080 },
+          "direct-svc": { image: "nginx:latest", port: 80 },
+        },
+      },
+    },
+  };
+
+  const resolved = await resolveWorkflowNodes(workflow, "http://indexer:3001");
+  assert(resolved.process.tasks["asset-task"].image === "ghcr.io/org/my-tool:1.0", "asset task resolved");
+  assert(resolved.process.tasks["asset-task"].command[0] === "run", "asset task command from metadata");
+  assert(resolved.process.tasks["direct-task"].image === "alpine:latest", "direct task unchanged");
+  assert(resolved.serve.services["asset-svc"].image === "ghcr.io/org/api:2.0", "asset service resolved");
+  assert(resolved.serve.services["asset-svc"].env.PORT === "3000", "asset service env from metadata");
+  assert(resolved.serve.services["asset-svc"].port === 8080, "asset service port from workflow");
+  assert(resolved.serve.services["direct-svc"].image === "nginx:latest", "direct service unchanged");
+  restoreFetch();
+}
+
+console.log("\n--- no asset sources returns sections unchanged ---");
+{
+  const workflow = {
+    sections: {
+      main: {
+        tasks: { t: { image: "alpine:latest" } },
+      },
+    },
+  };
+  const resolved = await resolveWorkflowNodes(workflow, "http://unused:3001");
+  assert(resolved.main.tasks.t.image === "alpine:latest", "task unchanged");
 }
 
 console.log("");

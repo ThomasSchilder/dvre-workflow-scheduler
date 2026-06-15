@@ -1,4 +1,4 @@
-import { resolveInfrastructure, resolveExternalRefSpecs } from "./refs.js";
+import { resolveInfrastructure, resolveExternalRefSpecs, resolveWorkflowNodes } from "./refs.js";
 import { resolveDag, computeServiceLifecycle } from "./dag.js";
 import { generateId, now } from "./db.js";
 import { buildTaskSpec, buildServiceSpec, buildVolumeSpec } from "./lib/spec.js";
@@ -86,6 +86,14 @@ async function deployWorkflow(workflowId, db) {
   } catch (err) {
     stmts.updateWorkflowDeployError.run(err.message, ts, workflowId);
     throw Object.assign(new Error(`External ref resolution failed: ${err.message}`), { status: 502 });
+  }
+
+  try {
+    const resolvedSections = await resolveWorkflowNodes(config);
+    config.sections = resolvedSections;
+  } catch (err) {
+    stmts.updateWorkflowDeployError.run(err.message, ts, workflowId);
+    throw Object.assign(new Error(`Task/service asset resolution failed: ${err.message}`), { status: 502 });
   }
 
   const operatorClients = buildOperatorClients(infraMap);
