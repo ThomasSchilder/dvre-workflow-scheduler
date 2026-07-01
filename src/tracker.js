@@ -35,6 +35,8 @@ async function handleWebhook(db, event, workflowId, resourceId, resourceType, de
 
   const schedulerNodeId = resolveSchedulerNodeId(stmts, resourceId, resourceType);
 
+  console.log(`[tracker] ${workflowId} — event: ${event} (resource=${resourceType}:${resourceId || "none"})`);
+
   stmts.insertEvent.run(workflowId, schedulerNodeId, event, JSON.stringify(details || {}), ts);
 
   if (schedulerNodeId) {
@@ -74,8 +76,10 @@ async function handleWebhook(db, event, workflowId, resourceId, resourceType, de
   });
 
   if (event === "task.failed" || event === "service.failed") {
+    console.log(`[tracker] ${workflowId} — ${event}, handling failure`);
     await handleFailure(workflowId, db);
   } else if (event === "task.succeeded") {
+    console.log(`[tracker] ${workflowId} — task succeeded, checking tier advancement`);
     await maybeAdvanceTier(workflowId, db, schedulerNodeId);
   }
 }
@@ -99,6 +103,7 @@ async function handleFailure(workflowId, db) {
   const terminalStates = new Set(["Failed", "Succeeded", "Cancelling", "Deleted"]);
   if (terminalStates.has(row.status)) return;
 
+  console.error(`[tracker] ${workflowId} — failing workflow (was ${row.status})`);
   const ts = now();
   stmts.updateWorkflowStatus.run("Failed", ts, workflowId);
 
@@ -131,7 +136,11 @@ async function maybeAdvanceTier(workflowId, db, schedulerNodeId) {
   if (schedulerNodeId) {
     const nodeRow = stmts.getNode.get(schedulerNodeId);
     if (!nodeRow) return;
-    if (!isTierComplete(nodeRow.tier, allNodes, tiers)) return;
+    if (!isTierComplete(nodeRow.tier, allNodes, tiers)) {
+      console.log(`[tracker] ${workflowId} — tier ${nodeRow.tier} not yet complete`);
+      return;
+    }
+    console.log(`[tracker] ${workflowId} — tier ${nodeRow.tier} complete, advancing`);
   } else {
     if (getHighestCompletedTier(allNodes, tiers) < 0) return;
   }
@@ -157,6 +166,7 @@ async function advanceTier(workflowId, db) {
     const nextTier = highestCompletedTier + 1;
 
     if (nextTier > tiers[tiers.length - 1].tier) {
+      console.log(`[tracker] ${workflowId} — all tiers complete, workflow succeeded`);
       await stopAllRunningServices(workflowId, db);
 
       const ts = now();
@@ -174,13 +184,16 @@ async function advanceTier(workflowId, db) {
       return;
     }
 
+    console.log(`[tracker] ${workflowId} — advancing to tier ${nextTier}`);
+
     const infraMap = reconstructInfraMap(row.infra_json);
-    const operatorClients = buildOperatorClients(infraMap);
+    const operatorClients = buildOperatorClients(infraMap, row.auth_token);
 
     const servicesToStart = getServicesToStart(nextTier, allNodes, serviceLifecycle);
     const ts = now();
     for (const svcNode of servicesToStart) {
       if (svcNode.operator_resource_id) {
+        console.log(`[tracker] ${workflowId} — starting service "${svcNode.section}.${svcNode.name}" for tier ${nextTier}`);
         const client = getOperatorClientForNode(svcNode, infraMap, operatorClients);
         await client.patchServiceDesiredPhase(workflowId, svcNode.operator_resource_id, "Running");
         stmts.updateNodeDesiredPhase.run("Running", ts, svcNode.id);
@@ -191,6 +204,7 @@ async function advanceTier(workflowId, db) {
     try {
       externalRefSpecs = await resolveExternalRefSpecs(config);
     } catch (err) {
+      console.error(`[tracker] ${workflowId} — external ref resolution failed: ${err.message}`);
       const failTs = now();
       stmts.updateWorkflowStatus.run("Failed", failTs, workflowId);
       broadcast(workflowId, "workflow.failed", {
@@ -204,6 +218,7 @@ async function advanceTier(workflowId, db) {
       const resolvedSections = await resolveWorkflowNodes(config);
       config.sections = resolvedSections;
     } catch (err) {
+      console.error(`[tracker] ${workflowId} — workflow node resolution failed: ${err.message}`);
       const failTs = now();
       stmts.updateWorkflowStatus.run("Failed", failTs, workflowId);
       broadcast(workflowId, "workflow.failed", {
@@ -213,6 +228,7 @@ async function advanceTier(workflowId, db) {
       return;
     }
 
+    console.log(`[tracker] ${workflowId} — deploying tier ${nextTier}`);
     await deployTier(workflowId, nextTier, dag, config, externalRefSpecs,
                      serviceLifecycle, infraMap, operatorClients, db);
 
@@ -221,12 +237,14 @@ async function advanceTier(workflowId, db) {
     const stopTs = now();
     for (const svcNode of servicesToStop) {
       if (svcNode.operator_resource_id) {
+        console.log(`[tracker] ${workflowId} — stopping service "${svcNode.section}.${svcNode.name}" after tier ${nextTier}`);
         const client = getOperatorClientForNode(svcNode, infraMap, operatorClients);
         await client.patchServiceDesiredPhase(workflowId, svcNode.operator_resource_id, "Stopped");
         stmts.updateNodeDesiredPhase.run("Stopped", stopTs, svcNode.id);
       }
     }
 
+    console.log(`[tracker] ${workflowId} — tier ${nextTier} deployed`);
     broadcast(workflowId, "tier.advanced", {
       workflowId,
       nodeId: null,
@@ -236,6 +254,7 @@ async function advanceTier(workflowId, db) {
       timestamp: now(),
     });
   } catch (err) {
+    console.error(`[tracker] ${workflowId} — tier advancement failed: ${err.message}`);
     const { stmts } = db;
     const failTs = now();
     stmts.updateWorkflowStatus.run("Failed", failTs, workflowId);
@@ -255,21 +274,29 @@ async function stopAllRunningServices(workflowId, db) {
   if (!row || !row.infra_json) return;
 
   const infraMap = reconstructInfraMap(row.infra_json);
-  const operatorClients = buildOperatorClients(infraMap);
+  const operatorClients = buildOperatorClients(infraMap, row.auth_token);
 
   const allNodes = stmts.listNodesByWorkflow.all(workflowId);
   const ts = now();
 
+  let stopped = 0;
   for (const node of allNodes) {
     if (node.type !== "service") continue;
     if (!node.operator_resource_id) continue;
     if (node.desired_phase === "Stopped") continue;
 
+    console.log(`[tracker] ${workflowId} — stopping service "${node.section}.${node.name}"`);
     const client = getOperatorClientForNode(node, infraMap, operatorClients);
     try {
       await client.patchServiceDesiredPhase(workflowId, node.operator_resource_id, "Stopped");
       stmts.updateNodeDesiredPhase.run("Stopped", ts, node.id);
-    } catch (_) {}
+      stopped++;
+    } catch (err) {
+      console.error(`[tracker] ${workflowId} — failed to stop service "${node.section}.${node.name}": ${err.message}`);
+    }
+  }
+  if (stopped > 0) {
+    console.log(`[tracker] ${workflowId} — stopped ${stopped} service(s)`);
   }
 }
 

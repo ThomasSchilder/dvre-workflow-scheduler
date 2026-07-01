@@ -10,28 +10,38 @@ function workflowsRouter(db) {
 
   router.post("/", async (req, res) => {
     const config = req.body;
+    const authToken = req.headers.authorization?.startsWith("Bearer ")
+      ? req.headers.authorization.slice(7)
+      : null;
 
     if (!config || typeof config !== "object") {
       return res.status(400).json({ error: "Request body must be a JSON object" });
     }
 
+    const wfName = config.metadata?.name || "(unnamed)";
+    console.log(`[workflows] POST / — received workflow "${wfName}"`);
+
     const validation = validateWorkflow(config);
     if (!validation.valid) {
+      console.log(`[workflows] "${wfName}" validation failed: ${validation.errors.length} error(s)`);
       return res.status(400).json({
         error: "Workflow validation failed",
         details: validation.errors,
       });
     }
+    console.log(`[workflows] "${wfName}" validation passed`);
 
     let dag;
     try {
       dag = resolveDag(config);
     } catch (err) {
+      console.log(`[workflows] "${wfName}" DAG resolution failed: ${err.message}`);
       return res.status(400).json({
         error: "DAG resolution failed",
         details: err.message,
       });
     }
+    console.log(`[workflows] "${wfName}" DAG resolved: ${Object.keys(dag.nodes).length} node(s), ${dag.tiers.length} tier(s)`);
 
     const serviceLifecycle = computeServiceLifecycle(dag);
 
@@ -40,6 +50,7 @@ function workflowsRouter(db) {
     const ts = now();
 
     stmts.insertWorkflow.run(id, name, "Deploying", JSON.stringify(config), null, null, null, ts, ts);
+    console.log(`[workflows] "${wfName}" created as ${id}`);
 
     for (const [nodeId, node] of Object.entries(dag.nodes)) {
       const nodeIdPrefixed = `${id}.${nodeId}`;
@@ -58,9 +69,11 @@ function workflowsRouter(db) {
 
     stmts.updateWorkflowDag.run(JSON.stringify(dag), "Deploying", ts, id);
 
+    console.log(`[workflows] ${id} — deploying (authToken: ${authToken ? "yes" : "no"})`);
     try {
-      await deployWorkflow(id, db);
+      await deployWorkflow(id, db, authToken);
     } catch (err) {
+      console.error(`[workflows] ${id} — deployment failed: ${err.message}`);
       const workflow = workflowToJSON(stmts.getWorkflow.get(id));
       const nodeRows = stmts.listNodesByWorkflow.all(id);
       workflow.nodes = nodeRows.map(nodeToJSON);
@@ -72,6 +85,7 @@ function workflowsRouter(db) {
       });
     }
 
+    console.log(`[workflows] ${id} — deployed successfully, status: Running`);
     const workflow = workflowToJSON(stmts.getWorkflow.get(id));
     const nodeRows = stmts.listNodesByWorkflow.all(id);
     workflow.nodes = nodeRows.map(nodeToJSON);
@@ -122,12 +136,15 @@ function workflowsRouter(db) {
       return res.status(404).json({ error: "Workflow not found" });
     }
 
+    console.log(`[workflows] DELETE ${workflowId} — current status: ${row.status}`);
     try {
       await cancelWorkflow(workflowId, db);
     } catch (err) {
+      console.error(`[workflows] DELETE ${workflowId} — cancel failed: ${err.message}`);
       return res.status(err.status || 500).json({ error: err.message });
     }
 
+    console.log(`[workflows] DELETE ${workflowId} — cancelled and deleted`);
     res.json({ id: workflowId, status: "Deleted" });
   });
 

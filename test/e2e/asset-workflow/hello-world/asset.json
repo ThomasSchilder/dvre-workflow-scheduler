@@ -1,0 +1,7 @@
+{
+  "name": "dvre-test-workflow-task-hello-world",
+  "url": "",
+  "protocol": 0,
+  "type": 2,
+  "metadata": "{\"image\":\"thomasschilder/dvre-test-workflow-task-hello-world:latest\",\"command\":[\"/task.sh\"],\"args\":[],\"env\":{},\"resources\":{}}"
+}

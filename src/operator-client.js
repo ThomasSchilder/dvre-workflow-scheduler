@@ -2,11 +2,12 @@ const DEFAULT_TIMEOUT = parseInt(process.env.OPERATOR_TIMEOUT_MS || "10000", 10)
 const DEFAULT_RETRY_ATTEMPTS = parseInt(process.env.OPERATOR_RETRY_ATTEMPTS || "3", 10);
 
 export class OperatorClient {
-  constructor({ baseUrl, timeout, retryAttempts }) {
+  constructor({ baseUrl, timeout, retryAttempts, authToken }) {
     if (!baseUrl) throw new Error("OperatorClient requires baseUrl");
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.timeout = timeout ?? DEFAULT_TIMEOUT;
     this.retryAttempts = retryAttempts ?? DEFAULT_RETRY_ATTEMPTS;
+    this.authToken = authToken || null;
   }
 
   async healthCheck() {
@@ -124,6 +125,9 @@ export class OperatorClient {
           headers: { "Content-Type": "application/json" },
           signal: AbortSignal.timeout(this.timeout),
         };
+        if (this.authToken) {
+          opts.headers["Authorization"] = `Bearer ${this.authToken}`;
+        }
         if (body !== undefined) {
           opts.body = JSON.stringify(body);
         }

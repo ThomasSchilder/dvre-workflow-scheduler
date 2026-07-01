@@ -1,0 +1,47 @@
+{
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "asset-workflow-test"
+  },
+  "infrastructure": {
+    "local": {
+      "source": "direct",
+      "type": "kubernetes",
+      "endpoint": "http://localhost:8080"
+    }
+  },
+  "volumes": {
+    "data-vol": {
+      "size": "1Gi",
+      "storageClass": "local-path",
+      "accessMode": "ReadWriteOnce"
+    }
+  },
+  "sections": {
+    "write": {
+      "executionMode": "parallel",
+      "binding": "local",
+      "volumes": ["data-vol"],
+      "tasks": {
+        "hello-world": {
+          "source": "asset",
+          "assetId": 0,
+          "volumeMounts": { "data-vol": "/data" }
+        }
+      }
+    },
+    "reverse": {
+      "dependsOn": ["write"],
+      "executionMode": "parallel",
+      "binding": "local",
+      "volumes": ["data-vol"],
+      "tasks": {
+        "reverse-content": {
+          "source": "asset",
+          "assetId": 0,
+          "volumeMounts": { "data-vol": "/data" }
+        }
+      }
+    }
+  }
+}

@@ -1,10 +1,10 @@
 import { OperatorClient } from "../operator-client.js";
 
-function buildOperatorClients(infraMap) {
+function buildOperatorClients(infraMap, authToken) {
   const clients = new Map();
   for (const [, infra] of infraMap) {
     if (!clients.has(infra.endpoint)) {
-      clients.set(infra.endpoint, new OperatorClient({ baseUrl: infra.endpoint }));
+      clients.set(infra.endpoint, new OperatorClient({ baseUrl: infra.endpoint, authToken }));
     }
   }
   return clients;

@@ -68,6 +68,10 @@ async function reconcileAll(db) {
   const { stmts } = db;
   const runningWorkflows = stmts.getRunningWorkflows.all();
 
+  if (runningWorkflows.length > 0) {
+    console.log(`[poller] reconciling ${runningWorkflows.length} running workflow(s)`);
+  }
+
   for (const wf of runningWorkflows) {
     try {
       await reconcileWorkflow(wf, db);
@@ -97,11 +101,12 @@ async function reconcileWorkflow(wf, db) {
     return;
   }
 
-  const operatorClients = buildOperatorClients(infraMap);
+  const operatorClients = buildOperatorClients(infraMap, wf.auth_token);
   const maxRetries = getPollMaxRetries();
 
   let anySuccess = false;
   let workflowNotFound = false;
+  let authError = false;
 
   for (const [endpoint, client] of operatorClients) {
     try {
@@ -109,18 +114,27 @@ async function reconcileWorkflow(wf, db) {
         client.listTasks(wf.id).catch((err) => {
           if (err.status === 404) {
             workflowNotFound = true;
+          } else if (err.status === 401) {
+            authError = true;
+            console.error(`[poller] ${wf.id} — auth error from operator ${endpoint}: ${err.message}`);
           }
           return null;
         }),
         client.listServices(wf.id).catch((err) => {
           if (err.status === 404) {
             workflowNotFound = true;
+          } else if (err.status === 401) {
+            authError = true;
+            console.error(`[poller] ${wf.id} — auth error from operator ${endpoint}: ${err.message}`);
           }
           return null;
         }),
         client.listVolumes(wf.id).catch((err) => {
           if (err.status === 404) {
             workflowNotFound = true;
+          } else if (err.status === 401) {
+            authError = true;
+            console.error(`[poller] ${wf.id} — auth error from operator ${endpoint}: ${err.message}`);
           }
           return null;
         }),
@@ -149,12 +163,33 @@ async function reconcileWorkflow(wf, db) {
     } catch (err) {
       if (err.status === 404) {
         workflowNotFound = true;
+      } else if (err.status === 401) {
+        authError = true;
+        console.error(`[poller] ${wf.id} — auth error from operator ${endpoint}: ${err.message}`);
       }
     }
   }
 
+  if (authError && !anySuccess) {
+    const ts = now();
+    const errorMsg = "Authentication failed: operator rejected auth token";
+    console.error(`[poller] ${wf.id} — failing workflow: ${errorMsg}`);
+    stmts.updateWorkflowDeployError.run(errorMsg, ts, wf.id);
+    broadcast(wf.id, "workflow.failed", {
+      workflowId: wf.id,
+      nodeId: null,
+      operatorResourceId: null,
+      resourceType: "workflow",
+      details: { phase: "Failed", error: errorMsg },
+      timestamp: ts,
+    });
+    await stopAllRunningServices(wf.id, db);
+    return;
+  }
+
   if (workflowNotFound && !anySuccess) {
     const ts = now();
+    console.error(`[poller] ${wf.id} — workflow not found on operator, failing`);
     stmts.updateWorkflowDeployError.run(
       "Workflow not found on operator",
       ts,
@@ -174,25 +209,25 @@ async function reconcileWorkflow(wf, db) {
 
   if (anySuccess) {
     if (wf.poll_failures > 0) {
+      console.log(`[poller] ${wf.id} — poll recovered, resetting failure count`);
       stmts.updateWorkflowPollFailures.run(0, now(), wf.id);
     }
   } else {
     const newFailures = (wf.poll_failures || 0) + 1;
     stmts.incrementWorkflowPollFailures.run(now(), wf.id);
+    console.error(`[poller] ${wf.id} — poll failed (${newFailures}/${maxRetries})`);
 
     if (newFailures >= maxRetries) {
       const ts = now();
-      stmts.updateWorkflowDeployError.run(
-        `Operator unreachable after ${newFailures} attempts`,
-        ts,
-        wf.id
-      );
+      const errorMsg = `Operator unreachable after ${newFailures} attempts`;
+      console.error(`[poller] ${wf.id} — failing workflow: ${errorMsg}`);
+      stmts.updateWorkflowDeployError.run(errorMsg, ts, wf.id);
       broadcast(wf.id, "workflow.failed", {
         workflowId: wf.id,
         nodeId: null,
         operatorResourceId: null,
         resourceType: "workflow",
-        details: { phase: "Failed", error: `Operator unreachable after ${newFailures} attempts` },
+        details: { phase: "Failed", error: errorMsg },
         timestamp: ts,
       });
       await stopAllRunningServices(wf.id, db);
@@ -210,6 +245,8 @@ async function reconcileTaskResource(workflowId, operatorTask, db) {
   if (!nodeRow) return;
 
   if (nodeRow.status === operatorPhase) return;
+
+  console.log(`[poller] ${workflowId} — task "${nodeRow.section}.${nodeRow.name}" ${nodeRow.status} -> ${operatorPhase}`);
 
   const event = operatorPhase === "Succeeded" ? "task.succeeded"
     : operatorPhase === "Failed" ? "task.failed"
@@ -232,6 +269,8 @@ async function reconcileServiceResource(workflowId, operatorService, db) {
 
   if (nodeRow.status === operatorPhase) return;
 
+  console.log(`[poller] ${workflowId} — service "${nodeRow.section}.${nodeRow.name}" ${nodeRow.status} -> ${operatorPhase}`);
+
   const event = operatorPhase === "Running" ? "service.running"
     : operatorPhase === "Failed" ? "service.failed"
     : operatorPhase === "Stopped" ? "service.stopped"
@@ -252,6 +291,8 @@ async function reconcileVolumeResource(workflowId, operatorVolume, db) {
   if (!volRow) return;
 
   if (volRow.status === operatorPhase) return;
+
+  console.log(`[poller] ${workflowId} — volume "${volRow.name}" ${volRow.status} -> ${operatorPhase}`);
 
   const event = operatorPhase === "Bound" ? "volume.bound"
     : operatorPhase === "Failed" ? "volume.failed"

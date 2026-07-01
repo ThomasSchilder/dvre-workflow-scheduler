@@ -81,6 +81,11 @@ function initDb(dbPath) {
     db.exec("ALTER TABLE workflows ADD COLUMN poll_failures INTEGER NOT NULL DEFAULT 0");
   }
 
+  const authTokenCol = db.prepare("PRAGMA table_info(workflows)").all();
+  if (!authTokenCol.some((c) => c.name === "auth_token")) {
+    db.exec("ALTER TABLE workflows ADD COLUMN auth_token TEXT");
+  }
+
   const stmts = {
     insertWorkflow: db.prepare(
       "INSERT INTO workflows (id, name, status, config_json, dag_json, infra_json, deploy_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -108,6 +113,9 @@ function initDb(dbPath) {
     ),
     incrementWorkflowPollFailures: db.prepare(
       "UPDATE workflows SET poll_failures = poll_failures + 1, updated_at = ? WHERE id = ?"
+    ),
+    updateWorkflowAuthToken: db.prepare(
+      "UPDATE workflows SET auth_token = ?, updated_at = ? WHERE id = ?"
     ),
 
     insertNode: db.prepare(

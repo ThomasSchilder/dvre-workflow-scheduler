@@ -1,0 +1,7 @@
+{
+  "name": "dvre-test-workflow-task-reverse",
+  "url": "",
+  "protocol": 0,
+  "type": 2,
+  "metadata": "{\"image\":\"thomasschilder/dvre-test-workflow-task-reverse:latest\",\"command\":[\"/task.sh\"],\"args\":[],\"env\":{},\"resources\":{}}"
+}

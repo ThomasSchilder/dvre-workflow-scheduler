@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 import { initDb } from "./db.js";
 import { healthRouter } from "./routes/health.js";
 import { workflowsRouter } from "./routes/workflows.js";
@@ -17,6 +18,7 @@ async function main() {
   startPoller(db);
 
   const app = express();
+  app.use(cors());
   app.use(express.json({ limit: "10mb" }));
 
   app.use("/api/v1/health", healthRouter());
