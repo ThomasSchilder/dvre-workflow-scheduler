@@ -35,7 +35,7 @@ function broadcast(workflowId, event, data) {
 function eventsRouter(db) {
   const router = new Router({ mergeParams: true });
 
-  router.get("/:workflowId/events", (req, res) => {
+  router.get("/:workflowId/events/stream", (req, res) => {
     const { workflowId } = req.params;
     const row = db.stmts.getWorkflow.get(workflowId);
     if (!row) {
