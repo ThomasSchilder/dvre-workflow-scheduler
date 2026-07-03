@@ -1,5 +1,5 @@
 import { now } from "./db.js";
-import { buildOperatorClients } from "./lib/infra.js";
+import { buildOperatorClients, reconstructInfraMap } from "./lib/infra.js";
 import { handleWebhook, stopAllRunningServices } from "./tracker.js";
 import { broadcast } from "./routes/events.js";
 
@@ -328,12 +328,6 @@ async function checkWorkflowTimeout(wf, db) {
     });
     await stopAllRunningServices(wf.id, db);
   }
-}
-
-function reconstructInfraMap(infraJson) {
-  if (!infraJson) return new Map();
-  const entries = JSON.parse(infraJson);
-  return new Map(entries);
 }
 
 export { startPoller, stopPoller, reconcileAll, reconcileWorkflow, checkWorkflowTimeout };

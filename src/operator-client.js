@@ -98,6 +98,10 @@ export class OperatorClient {
     return this._delete(`/api/v1/webhooks/${webhookId}`);
   }
 
+  async getTaskOutputs(workflowId, taskId) {
+    return this._get(`/api/v1/workflows/${workflowId}/tasks/${taskId}/outputs`);
+  }
+
   async _get(path) {
     return this._request("GET", path);
   }

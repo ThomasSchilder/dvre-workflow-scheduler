@@ -2,9 +2,10 @@ import { now } from "./db.js";
 import { computeServiceLifecycle } from "./dag.js";
 import { resolveExternalRefSpecs, resolveWorkflowNodes } from "./refs.js";
 import { deployTier } from "./scheduler.js";
-import { buildOperatorClients } from "./lib/infra.js";
+import { buildOperatorClients, reconstructInfraMap, getOperatorClientForNode } from "./lib/infra.js";
 import { OperatorClient } from "./operator-client.js";
 import { broadcast } from "./routes/events.js";
+import { collectTaskOutputs, createOutputZip } from "./outputs.js";
 import {
   isTierComplete,
   getHighestCompletedTier,
@@ -79,7 +80,8 @@ async function handleWebhook(db, event, workflowId, resourceId, resourceType, de
     console.log(`[tracker] ${workflowId} — ${event}, handling failure`);
     await handleFailure(workflowId, db);
   } else if (event === "task.succeeded") {
-    console.log(`[tracker] ${workflowId} — task succeeded, checking tier advancement`);
+    console.log(`[tracker] ${workflowId} — task succeeded, collecting outputs then checking tier advancement`);
+    await collectTaskOutputs(workflowId, schedulerNodeId, db);
     await maybeAdvanceTier(workflowId, db, schedulerNodeId);
   }
 }
@@ -117,6 +119,7 @@ async function handleFailure(workflowId, db) {
   });
 
   await stopAllRunningServices(workflowId, db);
+  await createOutputZip(workflowId);
 }
 
 async function maybeAdvanceTier(workflowId, db, schedulerNodeId) {
@@ -171,6 +174,8 @@ async function advanceTier(workflowId, db) {
 
       const ts = now();
       stmts.updateWorkflowStatus.run("Succeeded", ts, workflowId);
+
+      await createOutputZip(workflowId);
 
       broadcast(workflowId, "workflow.succeeded", {
         workflowId,
@@ -298,22 +303,6 @@ async function stopAllRunningServices(workflowId, db) {
   if (stopped > 0) {
     console.log(`[tracker] ${workflowId} — stopped ${stopped} service(s)`);
   }
-}
-
-function reconstructInfraMap(infraJson) {
-  if (!infraJson) return new Map();
-  const entries = JSON.parse(infraJson);
-  return new Map(entries);
-}
-
-function getOperatorClientForNode(node, infraMap, operatorClients) {
-  const binding = node.infra_binding;
-  if (binding && infraMap.has(binding)) {
-    const endpoint = infraMap.get(binding).endpoint;
-    const client = operatorClients.get(endpoint);
-    if (client) return client;
-  }
-  return [...operatorClients.values()][0];
 }
 
 export { handleWebhook, maybeAdvanceTier, advanceTier, handleFailure, stopAllRunningServices, advancingWorkflows };

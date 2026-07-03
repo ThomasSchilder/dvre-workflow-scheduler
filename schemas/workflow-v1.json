@@ -274,6 +274,22 @@
         },
         "resources": {
           "$ref": "#/$defs/resources"
+        },
+        "outputs": {
+          "type": "object",
+          "description": "Declared file outputs. Paths must be within a mounted volume.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/.*",
+                "description": "Absolute file path inside the container. Must be within a mounted volume."
+              }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+          }
         }
       },
       "allOf": [

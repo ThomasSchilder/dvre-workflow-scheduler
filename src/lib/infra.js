@@ -60,4 +60,20 @@ function getVolumeOperators(volName, config, infraMap, operatorClients) {
   return [...endpoints].map((ep) => operatorClients.get(ep));
 }
 
-export { buildOperatorClients, getOperatorForBinding, getVolumeOperators };
+function reconstructInfraMap(infraJson) {
+  if (!infraJson) return new Map();
+  const entries = JSON.parse(infraJson);
+  return new Map(entries);
+}
+
+function getOperatorClientForNode(node, infraMap, operatorClients) {
+  const binding = node.infra_binding;
+  if (binding && infraMap.has(binding)) {
+    const endpoint = infraMap.get(binding).endpoint;
+    const client = operatorClients.get(endpoint);
+    if (client) return client;
+  }
+  return [...operatorClients.values()][0];
+}
+
+export { buildOperatorClients, getOperatorForBinding, getVolumeOperators, reconstructInfraMap, getOperatorClientForNode };

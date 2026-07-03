@@ -1,8 +1,12 @@
 import { Router } from "express";
+import { existsSync } from "fs";
+import { join } from "path";
 import { validateWorkflow } from "../validator.js";
 import { generateId, now, workflowToJSON, nodeToJSON, volumeToJSON, eventToJSON } from "../db.js";
 import { resolveDag, computeServiceLifecycle } from "../dag.js";
 import { deployWorkflow, cancelWorkflow } from "../scheduler.js";
+
+const OUTPUTS_DIR = "./data/outputs";
 
 function workflowsRouter(db) {
   const { stmts } = db;
@@ -127,6 +131,21 @@ function workflowsRouter(db) {
       eventRows = stmts.listEventsByWorkflow.all(workflowId);
     }
     res.json({ data: eventRows.map(eventToJSON) });
+  });
+
+  router.get("/:workflowId/outputs", (req, res) => {
+    const { workflowId } = req.params;
+    const row = stmts.getWorkflow.get(workflowId);
+    if (!row) {
+      return res.status(404).json({ error: "Workflow not found" });
+    }
+
+    const zipPath = join(OUTPUTS_DIR, `${workflowId}.zip`);
+    if (!existsSync(zipPath)) {
+      return res.status(404).json({ error: "Outputs not yet available" });
+    }
+
+    res.download(zipPath, `${workflowId}-outputs.zip`);
   });
 
   router.delete("/:workflowId", async (req, res) => {
