@@ -3,8 +3,10 @@ import { resolveDag, computeServiceLifecycle } from "./dag.js";
 import { generateId, now } from "./db.js";
 import { buildTaskSpec, buildServiceSpec, buildVolumeSpec } from "./lib/spec.js";
 import { toOperatorResourceName, toOperatorVolumeName, translateDependsOn } from "./lib/naming.js";
-import { buildOperatorClients, getOperatorForBinding, getVolumeOperators } from "./lib/infra.js";
+import { buildOperatorClients, getOperatorForBinding, getVolumeOperators, reconstructInfraMap } from "./lib/infra.js";
 import { OperatorClient } from "./operator-client.js";
+import { broadcast } from "./routes/events.js";
+import { pushTierInputs } from "./inputs.js";
 
 const SCHEDULER_HOST = process.env.SCHEDULER_HOST || "localhost";
 const SCHEDULER_PORT = process.env.SCHEDULER_PORT || process.env.PORT || "3000";
@@ -67,11 +69,26 @@ async function deployTier(workflowId, tierNum, dag, config, externalRefSpecs,
   console.log(`[scheduler] deployTier ${workflowId} tier=${tierNum} — complete`);
 }
 
-async function deployWorkflow(workflowId, db, authToken) {
+function failWorkflow(workflowId, db, message) {
+  const { stmts } = db;
+  const ts = now();
+  stmts.updateWorkflowDeployError.run(message, ts, workflowId);
+  broadcast(workflowId, "workflow.failed", {
+    workflowId,
+    nodeId: null,
+    operatorResourceId: null,
+    resourceType: "workflow",
+    details: { phase: "Failed", error: message },
+    timestamp: ts,
+  });
+}
+
+async function deployWorkflow(workflowId, db) {
   const { stmts } = db;
   const row = stmts.getWorkflow.get(workflowId);
   if (!row) {
-    throw Object.assign(new Error("Workflow not found"), { status: 404 });
+    console.error(`[scheduler] deployWorkflow — workflow not found: ${workflowId}`);
+    return;
   }
 
   const config = JSON.parse(row.config_json);
@@ -81,14 +98,22 @@ async function deployWorkflow(workflowId, db, authToken) {
 
   console.log(`[scheduler] deployWorkflow ${workflowId} — starting deployment`);
 
+  broadcast(workflowId, "workflow.deploying", {
+    workflowId,
+    nodeId: null,
+    operatorResourceId: null,
+    resourceType: "workflow",
+    details: { phase: "Deploying" },
+    timestamp: ts,
+  });
+
   let infraMap;
   try {
     infraMap = await resolveInfrastructure(config);
     console.log(`[scheduler] ${workflowId} — infrastructure resolved: ${[...infraMap.keys()].join(", ")}`);
   } catch (err) {
     console.error(`[scheduler] ${workflowId} — infrastructure resolution failed: ${err.message}`);
-    stmts.updateWorkflowDeployError.run(err.message, ts, workflowId);
-    throw Object.assign(new Error(`Infrastructure resolution failed: ${err.message}`), { status: 502 });
+    return failWorkflow(workflowId, db, `Infrastructure resolution failed: ${err.message}`);
   }
 
   let externalRefSpecs;
@@ -97,8 +122,7 @@ async function deployWorkflow(workflowId, db, authToken) {
     console.log(`[scheduler] ${workflowId} — external refs resolved: ${Object.keys(externalRefSpecs).length} ref(s)`);
   } catch (err) {
     console.error(`[scheduler] ${workflowId} — external ref resolution failed: ${err.message}`);
-    stmts.updateWorkflowDeployError.run(err.message, ts, workflowId);
-    throw Object.assign(new Error(`External ref resolution failed: ${err.message}`), { status: 502 });
+    return failWorkflow(workflowId, db, `External ref resolution failed: ${err.message}`);
   }
 
   try {
@@ -107,15 +131,13 @@ async function deployWorkflow(workflowId, db, authToken) {
     console.log(`[scheduler] ${workflowId} — workflow nodes resolved`);
   } catch (err) {
     console.error(`[scheduler] ${workflowId} — task/service asset resolution failed: ${err.message}`);
-    stmts.updateWorkflowDeployError.run(err.message, ts, workflowId);
-    throw Object.assign(new Error(`Task/service asset resolution failed: ${err.message}`), { status: 502 });
+    return failWorkflow(workflowId, db, `Task/service asset resolution failed: ${err.message}`);
   }
 
-  const operatorClients = buildOperatorClients(infraMap, authToken);
+  const operatorClients = buildOperatorClients(infraMap, row.auth_token);
   console.log(`[scheduler] ${workflowId} — operator clients built: ${[...operatorClients.keys()].join(", ")}`);
 
   stmts.updateWorkflowInfra.run(JSON.stringify([...infraMap.entries()].map(([k, v]) => [k, v])), ts, workflowId);
-  stmts.updateWorkflowAuthToken.run(authToken, ts, workflowId);
 
   const deployedOperators = new Set();
 
@@ -161,12 +183,24 @@ async function deployWorkflow(workflowId, db, authToken) {
       );
     }
 
+    console.log(`[scheduler] ${workflowId} — pushing inputs for tier 0`);
+    await pushTierInputs(workflowId, 0, dag, config, infraMap, operatorClients, db);
+
     console.log(`[scheduler] ${workflowId} — deploying tier 0`);
     await deployTier(workflowId, 0, dag, config, externalRefSpecs,
                      serviceLifecycle, infraMap, operatorClients, db);
 
     stmts.updateWorkflowStatus.run("Running", ts, workflowId);
     console.log(`[scheduler] ${workflowId} — deployment complete, status: Running`);
+
+    broadcast(workflowId, "workflow.running", {
+      workflowId,
+      nodeId: null,
+      operatorResourceId: null,
+      resourceType: "workflow",
+      details: { phase: "Running" },
+      timestamp: now(),
+    });
   } catch (err) {
     console.error(`[scheduler] ${workflowId} — deployment failed: ${err.message}`);
     for (const endpoint of deployedOperators) {
@@ -176,7 +210,8 @@ async function deployWorkflow(workflowId, db, authToken) {
       } catch (_) {}
     }
     stmts.updateWorkflowDeployError.run(err.message, ts, workflowId);
-    throw Object.assign(new Error(`Deployment failed: ${err.message}`), { status: 502 });
+    console.error(`[scheduler] ${workflowId} — deployment failed (async): ${err.message}`);
+    failWorkflow(workflowId, db, err.message);
   }
 }
 

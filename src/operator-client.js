@@ -102,6 +102,10 @@ export class OperatorClient {
     return this._get(`/api/v1/workflows/${workflowId}/tasks/${taskId}/outputs`);
   }
 
+  async pushVolumeFile(workflowId, volumeName, body) {
+    return this._post(`/api/v1/workflows/${workflowId}/volumes/${volumeName}/files`, body);
+  }
+
   async _get(path) {
     return this._request("GET", path);
   }

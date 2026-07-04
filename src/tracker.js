@@ -6,6 +6,7 @@ import { buildOperatorClients, reconstructInfraMap, getOperatorClientForNode } f
 import { OperatorClient } from "./operator-client.js";
 import { broadcast } from "./routes/events.js";
 import { collectTaskOutputs, createOutputZip } from "./outputs.js";
+import { pushTierInputs } from "./inputs.js";
 import {
   isTierComplete,
   getHighestCompletedTier,
@@ -232,6 +233,9 @@ async function advanceTier(workflowId, db) {
       });
       return;
     }
+
+    console.log(`[tracker] ${workflowId} — pushing inputs for tier ${nextTier}`);
+    await pushTierInputs(workflowId, nextTier, dag, config, infraMap, operatorClients, db);
 
     console.log(`[tracker] ${workflowId} — deploying tier ${nextTier}`);
     await deployTier(workflowId, nextTier, dag, config, externalRefSpecs,

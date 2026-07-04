@@ -8,6 +8,62 @@ import { deployWorkflow, cancelWorkflow } from "../scheduler.js";
 
 const OUTPUTS_DIR = "./data/outputs";
 
+function validateInputRefs(config, dag) {
+  const errors = [];
+
+  for (const [sectionName, section] of Object.entries(config.sections || {})) {
+    if (!section || !section.tasks) continue;
+
+    for (const [taskName, taskDef] of Object.entries(section.tasks)) {
+      if (!taskDef || !taskDef.inputs) continue;
+
+      const currentNode = dag.nodes[`${sectionName}.${taskName}`];
+      if (!currentNode) continue;
+
+      for (const [inputKey, inputDef] of Object.entries(taskDef.inputs)) {
+        if (!inputDef || inputDef.from !== "output") continue;
+
+        const ref = inputDef.ref;
+        if (!ref) {
+          errors.push(`Input "${inputKey}" on task "${sectionName}.${taskName}" has from=output but no ref`);
+          continue;
+        }
+
+        const parts = ref.split(".");
+        if (parts.length !== 3) {
+          errors.push(`Input "${inputKey}" ref "${ref}" must be section.task.outputName`);
+          continue;
+        }
+
+        const [refSection, refTask, refOutput] = parts;
+        const refNode = dag.nodes[`${refSection}.${refTask}`];
+
+        if (!refNode) {
+          errors.push(`Input "${inputKey}" ref "${ref}" references unknown task`);
+          continue;
+        }
+
+        if (refNode.tier >= currentNode.tier) {
+          errors.push(
+            `Input "${inputKey}" on task "${sectionName}.${taskName}" references task "${refSection}.${refTask}" which is not in a previous tier`
+          );
+          continue;
+        }
+
+        const refTaskDef = config.sections?.[refSection]?.tasks?.[refTask];
+        const refOutputs = refTaskDef?.outputs;
+        if (!refOutputs || !refOutputs[refOutput]) {
+          errors.push(
+            `Input "${inputKey}" ref "${ref}" references output "${refOutput}" which is not defined on task "${refSection}.${refTask}"`
+          );
+        }
+      }
+    }
+  }
+
+  return errors;
+}
+
 function workflowsRouter(db) {
   const { stmts } = db;
   const router = new Router({ mergeParams: true });
@@ -33,7 +89,7 @@ function workflowsRouter(db) {
         details: validation.errors,
       });
     }
-    console.log(`[workflows] "${wfName}" validation passed`);
+    console.log(`[workflows] "${wfName}" schema validation passed`);
 
     let dag;
     try {
@@ -47,14 +103,26 @@ function workflowsRouter(db) {
     }
     console.log(`[workflows] "${wfName}" DAG resolved: ${Object.keys(dag.nodes).length} node(s), ${dag.tiers.length} tier(s)`);
 
+    const inputErrors = validateInputRefs(config, dag);
+    if (inputErrors.length > 0) {
+      console.log(`[workflows] "${wfName}" input ref validation failed: ${inputErrors.length} error(s)`);
+      return res.status(400).json({
+        error: "Input reference validation failed",
+        details: inputErrors,
+      });
+    }
+
     const serviceLifecycle = computeServiceLifecycle(dag);
 
     const id = generateId("wf");
     const name = config.metadata?.name || id;
     const ts = now();
 
-    stmts.insertWorkflow.run(id, name, "Deploying", JSON.stringify(config), null, null, null, ts, ts);
-    console.log(`[workflows] "${wfName}" created as ${id}`);
+    stmts.insertWorkflow.run(id, name, "Created", JSON.stringify(config), null, null, null, ts, ts);
+    if (authToken) {
+      stmts.updateWorkflowAuthToken.run(authToken, ts, id);
+    }
+    console.log(`[workflows] "${wfName}" created as ${id} (status: Created)`);
 
     for (const [nodeId, node] of Object.entries(dag.nodes)) {
       const nodeIdPrefixed = `${id}.${nodeId}`;
@@ -71,31 +139,36 @@ function workflowsRouter(db) {
       );
     }
 
-    stmts.updateWorkflowDag.run(JSON.stringify(dag), "Deploying", ts, id);
+    stmts.updateWorkflowDag.run(JSON.stringify(dag), "Created", ts, id);
 
-    console.log(`[workflows] ${id} — deploying (authToken: ${authToken ? "yes" : "no"})`);
-    try {
-      await deployWorkflow(id, db, authToken);
-    } catch (err) {
-      console.error(`[workflows] ${id} — deployment failed: ${err.message}`);
-      const workflow = workflowToJSON(stmts.getWorkflow.get(id));
-      const nodeRows = stmts.listNodesByWorkflow.all(id);
-      workflow.nodes = nodeRows.map(nodeToJSON);
-      const volRows = stmts.listVolumesByWorkflow.all(id);
-      workflow.volumes = volRows.map(volumeToJSON);
-      return res.status(err.status || 502).json({
-        error: err.message,
-        workflow,
-      });
-    }
-
-    console.log(`[workflows] ${id} — deployed successfully, status: Running`);
     const workflow = workflowToJSON(stmts.getWorkflow.get(id));
     const nodeRows = stmts.listNodesByWorkflow.all(id);
     workflow.nodes = nodeRows.map(nodeToJSON);
     const volRows = stmts.listVolumesByWorkflow.all(id);
     workflow.volumes = volRows.map(volumeToJSON);
     res.status(201).json(workflow);
+  });
+
+  router.post("/:workflowId/deploy", async (req, res) => {
+    const { workflowId } = req.params;
+    const row = stmts.getWorkflow.get(workflowId);
+    if (!row) {
+      return res.status(404).json({ error: "Workflow not found" });
+    }
+
+    if (row.status !== "Created") {
+      return res.status(409).json({ error: `Workflow status is "${row.status}", must be "Created" to deploy` });
+    }
+
+    const ts = now();
+    stmts.updateWorkflowStatus.run("Deploying", ts, workflowId);
+    console.log(`[workflows] ${workflowId} — deploy requested, status: Deploying`);
+
+    res.status(202).json({ id: workflowId, status: "Deploying" });
+
+    deployWorkflow(workflowId, db).catch(err => {
+      console.error(`[workflows] ${workflowId} — async deployment failed: ${err.message}`);
+    });
   });
 
   router.get("/", (_req, res) => {

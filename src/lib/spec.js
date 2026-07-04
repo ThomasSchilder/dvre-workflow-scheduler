@@ -34,6 +34,7 @@ function buildTaskSpec(workflowId, nodeId, node, config, externalRefSpecs) {
     ...(Object.keys(volumeMounts).length > 0 ? { volumeMounts } : {}),
     ...(taskDef.resources ? { resources: taskDef.resources } : {}),
     ...(taskDef.outputs ? { outputs: taskDef.outputs } : {}),
+    ...(taskDef.inputs ? { inputs: taskDef.inputs } : {}),
     ...(node.dependsOn.length > 0 ? { dependsOn: translateDependsOn(node.dependsOn, section) } : {}),
     ...(node.binding ? { infraRef: node.binding } : {}),
   };

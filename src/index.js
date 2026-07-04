@@ -5,6 +5,7 @@ import { healthRouter } from "./routes/health.js";
 import { workflowsRouter } from "./routes/workflows.js";
 import { eventsRouter } from "./routes/events.js";
 import { webhooksRouter } from "./routes/webhooks.js";
+import { filesRouter } from "./routes/files.js";
 import { visualizeRouter } from "./routes/visualize.js";
 import { startPoller, stopPoller } from "./poller.js";
 
@@ -24,6 +25,7 @@ async function main() {
   app.use("/api/v1/health", healthRouter());
   app.use("/api/v1/workflows", workflowsRouter(db));
   app.use("/api/v1/workflows", eventsRouter(db));
+  app.use("/api/v1/workflows", filesRouter(db));
   app.use("/api/v1/webhooks", webhooksRouter(db));
   app.use("/api/v1/visualize", visualizeRouter());
 
