@@ -135,6 +135,50 @@
         }
       }
     },
+    "inputSpec": {
+      "type": "object",
+      "description": "File input to populate on a volume before the task runs.",
+      "properties": {
+        "from": {
+          "type": "string",
+          "enum": ["output", "file"],
+          "description": "Source of the input file. 'output': use a previous task's output. 'file': upload a file."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Qualified output reference (section.task.outputName). Required when from=output."
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Selected file name. Required when from=file."
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/.*",
+          "description": "Destination path inside the container. Must be within a mounted volume."
+        }
+      },
+      "required": ["from", "path"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "from": { "const": "output" } }
+          },
+          "then": {
+            "required": ["ref"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "from": { "const": "file" } }
+          },
+          "then": {
+            "required": ["fileName"]
+          }
+        }
+      ]
+    },
     "section": {
       "type": "object",
       "required": [],
@@ -289,6 +333,13 @@
             },
             "required": ["path"],
             "additionalProperties": false
+          }
+        },
+        "inputs": {
+          "type": "object",
+          "description": "File inputs to populate on volumes before the task runs.",
+          "additionalProperties": {
+            "$ref": "#/$defs/inputSpec"
           }
         }
       },
