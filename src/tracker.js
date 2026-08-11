@@ -81,8 +81,7 @@ async function handleWebhook(db, event, workflowId, resourceId, resourceType, de
     console.log(`[tracker] ${workflowId} — ${event}, handling failure`);
     await handleFailure(workflowId, db);
   } else if (event === "task.succeeded") {
-    console.log(`[tracker] ${workflowId} — task succeeded, collecting outputs then checking tier advancement`);
-    await collectTaskOutputs(workflowId, schedulerNodeId, db);
+    console.log(`[tracker] ${workflowId} — task succeeded, checking tier advancement`);
     await maybeAdvanceTier(workflowId, db, schedulerNodeId);
   }
 }
@@ -191,6 +190,14 @@ async function advanceTier(workflowId, db) {
     }
 
     console.log(`[tracker] ${workflowId} — advancing to tier ${nextTier}`);
+
+    const completedTierNodes = allNodes.filter(
+      (n) => n.type === "task" && n.tier === highestCompletedTier
+    );
+    for (const node of completedTierNodes) {
+      console.log(`[tracker] ${workflowId} — collecting outputs for "${node.section}.${node.name}" (tier ${highestCompletedTier})`);
+      await collectTaskOutputs(workflowId, node.id, db);
+    }
 
     const infraMap = reconstructInfraMap(row.infra_json);
     const operatorClients = buildOperatorClients(infraMap, row.auth_token);
