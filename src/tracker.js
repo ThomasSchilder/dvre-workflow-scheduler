@@ -170,6 +170,7 @@ async function advanceTier(workflowId, db) {
 
     if (nextTier > tiers[tiers.length - 1].tier) {
       console.log(`[tracker] ${workflowId} — all tiers complete, workflow succeeded`);
+      await collectTierOutputs(workflowId, allNodes, highestCompletedTier, db);
       await stopAllRunningServices(workflowId, db);
 
       const ts = now();
@@ -191,13 +192,7 @@ async function advanceTier(workflowId, db) {
 
     console.log(`[tracker] ${workflowId} — advancing to tier ${nextTier}`);
 
-    const completedTierNodes = allNodes.filter(
-      (n) => n.type === "task" && n.tier === highestCompletedTier
-    );
-    for (const node of completedTierNodes) {
-      console.log(`[tracker] ${workflowId} — collecting outputs for "${node.section}.${node.name}" (tier ${highestCompletedTier})`);
-      await collectTaskOutputs(workflowId, node.id, db);
-    }
+    await collectTierOutputs(workflowId, allNodes, highestCompletedTier, db);
 
     const infraMap = reconstructInfraMap(row.infra_json);
     const operatorClients = buildOperatorClients(infraMap, row.auth_token);
@@ -281,6 +276,16 @@ async function advanceTier(workflowId, db) {
     });
   } finally {
     advancingWorkflows.delete(workflowId);
+  }
+}
+
+async function collectTierOutputs(workflowId, allNodes, tierNum, db) {
+  const completedTierNodes = allNodes.filter(
+    (n) => n.type === "task" && n.tier === tierNum
+  );
+  for (const node of completedTierNodes) {
+    console.log(`[tracker] ${workflowId} — collecting outputs for "${node.section}.${node.name}" (tier ${tierNum})`);
+    await collectTaskOutputs(workflowId, node.id, db);
   }
 }
 
